@@ -40,7 +40,7 @@ binding = "AI"
 # 環境變量（非敏感）
 # ============================================
 [vars]
-WORKER_VERSION = "11.18.0"
+WORKER_VERSION = "11.19.0"
 DEFAULT_MODEL = "flux-schnell"
 MAX_WIDTH = 4096
 MAX_HEIGHT = 4096

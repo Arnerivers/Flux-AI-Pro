@@ -471,11 +471,19 @@ MIT License. 歡迎 Fork 與二次開發。
 
 ## 📝 更新日誌 (Changelog)
 
+### v11.19.0 (2026-03-02)
+- **Supabase API 輪詢機制**：完整實作非同步任務輪詢功能
+- 支援多種狀態查詢端點自動嘗試
+- 指數退避錯誤處理機制
+- 詳細進度日誌輸出
+- 新增 `gemini-3.1-flash-image-preview` 模型支援
+
 ### v11.18.0 (2026-03-02)
 - **新增 Supabase API 供應商**：整合 Supabase OpenAI 相容 API
-  - 支援 DALL-E 3 和 GPT Image 1 模型
-  - 端點：`https://gjosebfngzowbcrwzxnw.supabase.co/functions/v1/openai-compatible`
-  - 需設定 `SUPABASE_API_KEY` 環境變數
+- 支援 DALL-E 3 和 GPT Image 1 模型
+- 端點：`https://gjosebfngzowbcrwzxnw.supabase.co/functions/v1/openai-compatible`
+- 需設定 `SUPABASE_API_KEY` 環境變數
+- Nano Pro 頁面新增 API 供應商選擇器
 
 ### v11.17.0 (2026-02-28)
 - **Gemini 原生 API 參數支援**：Nonpon API 現在使用 Gemini 原生格式

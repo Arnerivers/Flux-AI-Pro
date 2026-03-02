@@ -1754,108 +1754,279 @@ class KaaiProvider {
   // =================================================================================
   // SupabaseProvider - Supabase OpenAI Compatible API Provider
   // =================================================================================
+  // SupabaseProvider - Supabase OpenAI Compatible API Provider with Polling
+  // =================================================================================
   class SupabaseProvider {
-  constructor(config, env) {
-  this.config = config;
-  this.name = config.name;
-  this.env = env;
-  }
+    constructor(config, env) {
+      this.config = config;
+      this.name = config.name;
+      this.env = env;
+    }
   
-  async generate(prompt, options, logger) {
-  const {
-  model = "dall-e-3",
-  width = 1024,
-  height = 1024,
-  apiKey = "",
-  style = "none",
-  negativePrompt = "",
-  quality = "standard"
-  } = options;
+    async generate(prompt, options, logger) {
+      const {
+        model = "gemini-3.1-flash-image-preview",
+        width = 1024,
+        height = 1024,
+        apiKey = "",
+        style = "none",
+        negativePrompt = "",
+        quality = "standard"
+      } = options;
   
-  // Prefer environment variable if available
-  const finalApiKey = this.env.SUPABASE_API_KEY || apiKey;
+      // Prefer environment variable if available
+      const finalApiKey = this.env.SUPABASE_API_KEY || apiKey;
   
-  if (!finalApiKey) throw new Error("Supabase API Key is required (Set SUPABASE_API_KEY env var or provide via UI)");
+      if (!finalApiKey) throw new Error("Supabase API Key is required (Set SUPABASE_API_KEY env var or provide via UI)");
   
-  let basePrompt = prompt;
-  let translationLog = { translated: false };
-  if (/[\u4e00-\u9fa5]/.test(prompt)) {
-  logger.add("🌐 Pre-translation", { message: "Detecting Chinese, translating first..." });
-  const translation = await translateToEnglish(prompt, this.env);
-  if (translation.translated) {
-  basePrompt = translation.text;
-  translationLog = translation;
-  logger.add("✅ Translation Success", { original: prompt, translated: basePrompt });
-  }
-  }
+      // 中文自動翻譯
+      let basePrompt = prompt;
+      let translationLog = { translated: false };
+      if (/[\u4e00-\u9fa5]/.test(prompt)) {
+        logger.add("🌐 Pre-translation", { message: "Detecting Chinese, translating first..." });
+        const translation = await translateToEnglish(prompt, this.env);
+        if (translation.translated) {
+          basePrompt = translation.text;
+          translationLog = translation;
+          logger.add("✅ Translation Success", { original: prompt, translated: basePrompt });
+        }
+      }
   
-  // Apply Style
-  const { enhancedPrompt } = StyleProcessor.applyStyle(basePrompt, style, negativePrompt);
-  logger.add("🎨 Style Processing", { selected_style: style, style_applied: style !== 'none', original: basePrompt, enhanced: enhancedPrompt });
+      // Apply Style
+      const { enhancedPrompt } = StyleProcessor.applyStyle(basePrompt, style, negativePrompt);
+      logger.add("🎨 Style Processing", {
+        selected_style: style,
+        style_applied: style !== 'none',
+        original: basePrompt,
+        enhanced: enhancedPrompt
+      });
   
-  const url = `${this.config.endpoint}/images/generations`;
-  const headers = {
-  'Content-Type': 'application/json',
-  'Authorization': `Bearer ${finalApiKey}`,
-  'User-Agent': 'Flux-AI-Pro-Worker'
-  };
+      const url = `${this.config.endpoint}/images/generations`;
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${finalApiKey}`,
+        'User-Agent': 'Flux-AI-Pro-Worker'
+      };
   
-  // Map size to supported formats
-  let sizeStr = "1024x1024";
-  if (width > height && width >= 1500) sizeStr = "1792x1024";
-  else if (height > width && height >= 1500) sizeStr = "1024x1792";
+      // Map size to supported formats
+      let sizeStr = "1024x1024";
+      if (width > height && width >= 1500) sizeStr = "1792x1024";
+      else if (height > width && height >= 1500) sizeStr = "1024x1792";
   
-  const body = {
-  model: model,
-  prompt: enhancedPrompt,
-  n: 1,
-  size: sizeStr,
-  quality: quality,
-  response_format: "url"
-  };
+      const body = {
+        model: model,
+        prompt: enhancedPrompt,
+        n: 1,
+        size: sizeStr,
+        quality: quality,
+        response_format: "url"
+      };
   
-  logger.add("📡 Supabase Request", { endpoint: url, model: model, size: sizeStr, quality: quality });
+      logger.add("📡 Supabase Request", { endpoint: url, model: model, size: sizeStr, quality: quality });
   
-  try {
-  const response = await fetchWithTimeout(url, { method: 'POST', headers: headers, body: JSON.stringify(body) }, 60000);
+      try {
+        const response = await fetchWithTimeout(url, { method: 'POST', headers: headers, body: JSON.stringify(body) }, 60000);
   
-  if (!response.ok) {
-  const errText = await response.text();
-  throw new Error(`Supabase API Error (${response.status}): ${errText}`);
-  }
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Supabase API Error (${response.status}): ${errText}`);
+        }
   
-  const data = await response.json();
+        const data = await response.json();
+        logger.add("📥 Supabase Response", { data: JSON.stringify(data).substring(0, 500) });
   
-  if (data.data && data.data.length > 0) {
-  const imgUrl = data.data[0].url;
-  logger.add("⬇️ Downloading Image", { url: imgUrl });
+        // ===== 檢查是否為非同步任務 =====
+        if (data.data && data.data[0] && data.data[0].task_id) {
+          const taskId = data.data[0].task_id;
+          const status = data.data[0].status;
+          logger.add("🔄 Async Task Created", { taskId, status });
   
-  // Download image to return binary
-  const imgResp = await fetch(imgUrl);
-  const imageBuffer = await imgResp.arrayBuffer();
-  const contentType = imgResp.headers.get('content-type') || 'image/png';
+          // 啟動輪詢
+          const imageUrl = await this.pollTask(taskId, headers, logger);
   
-  return {
-  imageData: imageBuffer,
-  contentType: contentType,
-  url: imgUrl,
-  provider: this.name,
-  model: model,
-  seed: -1,
-  width: width,
-  height: height,
-  auto_translated: translationLog.translated,
-  authenticated: true,
-  cost: "QUOTA"
-  };
-  } else {
-  throw new Error("Invalid response format from Supabase API");
-  }
-  } catch (e) {
-  logger.add("❌ Supabase Failed", { error: e.message });
-  throw e;
-  }
-  }
+          // 下載圖片
+          logger.add("⬇️ Downloading Image", { url: imageUrl });
+          const imgResp = await fetch(imageUrl);
+          const imageBuffer = await imgResp.arrayBuffer();
+          const contentType = imgResp.headers.get('content-type') || 'image/png';
+  
+          return {
+            imageData: imageBuffer,
+            contentType: contentType,
+            url: imageUrl,
+            provider: this.name,
+            model: model,
+            seed: -1,
+            width: width,
+            height: height,
+            auto_translated: translationLog.translated,
+            authenticated: true,
+            cost: "QUOTA"
+          };
+        }
+  
+        // ===== 同步回應處理 =====
+        if (data.data && data.data.length > 0 && data.data[0].url) {
+          const imgUrl = data.data[0].url;
+          logger.add("⬇️ Downloading Image (Sync)", { url: imgUrl });
+  
+          const imgResp = await fetch(imgUrl);
+          const imageBuffer = await imgResp.arrayBuffer();
+          const contentType = imgResp.headers.get('content-type') || 'image/png';
+  
+          return {
+            imageData: imageBuffer,
+            contentType: contentType,
+            url: imgUrl,
+            provider: this.name,
+            model: model,
+            seed: -1,
+            width: width,
+            height: height,
+            auto_translated: translationLog.translated,
+            authenticated: true,
+            cost: "QUOTA"
+          };
+        }
+  
+        throw new Error("Invalid response format from Supabase API: " + JSON.stringify(data).substring(0, 200));
+  
+      } catch (e) {
+        logger.add("❌ Supabase Failed", { error: e.message });
+        throw e;
+      }
+    }
+  
+    // ===== 輪詢任務狀態 =====
+    async pollTask(taskId, headers, logger, maxAttempts = 60, interval = 3000) {
+      // 嘗試多種可能的狀態查詢端點
+      const statusUrls = [
+        `${this.config.endpoint}/images/generations/${taskId}`,
+        `${this.config.endpoint}/tasks/${taskId}`,
+        `${this.config.endpoint}/v1/tasks/${taskId}`,
+        `${this.config.endpoint}/v1/images/generations/${taskId}`
+      ];
+  
+      const totalTimeout = Math.round(maxAttempts * interval / 1000);
+      logger.add("🔄 Starting Poll", {
+        taskId,
+        maxAttempts,
+        interval: `${interval}ms`,
+        totalTimeout: `${totalTimeout}s`,
+        endpoints: statusUrls.length
+      });
+  
+      let currentInterval = interval;
+      let consecutiveErrors = 0;
+      const maxConsecutiveErrors = 5;
+  
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        // 嘗試所有可能的端點
+        let lastError = null;
+        let data = null;
+        let successUrl = null;
+  
+        for (const statusUrl of statusUrls) {
+          try {
+            const response = await fetchWithTimeout(statusUrl, { method: 'GET', headers }, 15000);
+            
+            if (response.ok) {
+              data = await response.json();
+              successUrl = statusUrl;
+              lastError = null;
+              break; // 成功獲取數據，跳出端點嘗試循環
+            } else if (response.status === 404) {
+              // 404 表示此端點不存在，繼續嘗試下一個
+              continue;
+            } else {
+              const errText = await response.text();
+              lastError = new Error(`Status ${response.status}: ${errText.substring(0, 100)}`);
+            }
+          } catch (e) {
+            lastError = e;
+          }
+        }
+  
+        // 如果所有端點都失敗
+        if (lastError && !data) {
+          consecutiveErrors++;
+          if (consecutiveErrors >= maxConsecutiveErrors) {
+            throw new Error(`All status endpoints failed after ${maxConsecutiveErrors} consecutive errors: ${lastError.message}`);
+          }
+          
+          const backoffTime = Math.min(currentInterval * Math.pow(2, consecutiveErrors), 30000);
+          logger.add(`⚠️ All Endpoints Failed`, {
+            attempt,
+            consecutiveErrors,
+            backoffTime: `${Math.round(backoffTime/1000)}s`,
+            lastError: lastError.message.substring(0, 100)
+          });
+          await new Promise(r => setTimeout(r, backoffTime));
+          continue;
+        }
+  
+        consecutiveErrors = 0;
+  
+        // 進度報告 - 每 5 次或狀態變化時
+        const statusValue = data?.status || data?.data?.[0]?.status || 'unknown';
+        if (attempt % 5 === 0 || ['completed', 'failed', 'processing'].includes(statusValue)) {
+          const progress = Math.round((attempt / maxAttempts) * 100);
+          const elapsed = Math.round(attempt * currentInterval / 1000);
+          logger.add(`📊 Poll Progress: ${progress}%`, {
+            attempt: `${attempt}/${maxAttempts}`,
+            status: statusValue,
+            elapsed: `${elapsed}s`,
+            endpoint: successUrl ? successUrl.replace(this.config.endpoint, '') : 'N/A'
+          });
+        }
+  
+        // 檢查任務狀態 - 多種格式支援
+        const taskStatus = data?.status || data?.data?.[0]?.status || data?.task?.status;
+        
+        if (taskStatus === 'completed' || taskStatus === 'succeeded') {
+          // 嘗試多種可能的圖片 URL 路徑
+          const imageUrl =
+            data?.result?.url ||
+            data?.url ||
+            data?.data?.[0]?.url ||
+            data?.data?.[0]?.result?.url ||
+            data?.output?.url ||
+            data?.image_url;
+  
+          if (imageUrl) {
+            const totalTime = Math.round(attempt * currentInterval / 1000);
+            logger.add("✅ Task Completed", {
+              imageUrl,
+              totalAttempts: attempt,
+              totalTime: `${totalTime}s`,
+              endpoint: successUrl ? successUrl.replace(this.config.endpoint, '') : 'N/A'
+            });
+            return imageUrl;
+          }
+          throw new Error("Task completed but no image URL found: " + JSON.stringify(data).substring(0, 300));
+        }
+  
+        if (taskStatus === 'failed' || taskStatus === 'error') {
+          const errorMsg =
+            data?.error ||
+            data?.message ||
+            data?.data?.[0]?.error ||
+            data?.data?.[0]?.message ||
+            data?.result?.error ||
+            'Unknown error';
+          throw new Error(`Task failed: ${errorMsg}`);
+        }
+  
+        // 仍在處理中
+        if (attempt < maxAttempts) {
+          // 指數退避：每次增加 10%，最大 10 秒
+          currentInterval = Math.min(interval * Math.pow(1.1, attempt), 10000);
+          await new Promise(r => setTimeout(r, currentInterval));
+        }
+      }
+  
+      throw new Error(`Task timeout after ${maxAttempts} attempts (${totalTimeout}s). Task ID: ${taskId}`);
+    }
   }
   
   // =================================================================================
