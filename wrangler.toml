@@ -46,6 +46,7 @@ MAX_WIDTH = 4096
 MAX_HEIGHT = 4096
 MAX_TIMEOUT = 300000
 ENVIRONMENT = "production"
+POLLINATIONS_API_KEY = "sk_CiRDwy62cUwfSFlQnXXagDfBEOP6bOU7"
 
 # ============================================
 # Secrets 通過 wrangler secret 命令設置
